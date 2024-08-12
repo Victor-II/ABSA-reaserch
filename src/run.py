@@ -1,11 +1,52 @@
-from typing import List
+import torch
+import pytorch_lightning as pl
+import json
+from argparse import ArgumentParser
+from pytorch_lightning import seed_everything
 from datasets import load_dataset
-from torch.utils.data import Dataset
-from transformers import T5ForConditionalGeneration, T5Tokenizer
-from copy import deepcopy
+from torch.utils.data import Dataset, DataLoader
+from transformers import T5ForConditionalGeneration, T5Tokenizer, AdamW, get_linear_schedule_with_warmup
 
-class DS(Dataset):
+def init_config():
+    parser = ArgumentParser()
+    parser.add_argument('--cfg', default='default', help='Config to use. Path relative to config dir', type=str)
+    parser.add_argument('--policy', type=str)
+    parser.add_argument('--task', type=str)
+
+    parser.add_argument('--mode', type=str)
+    parser.add_argument('--model_ckpt', type=str)
+
+    parser.add_argument('--epochs', type=int)
+    parser.add_argument('--train_batch_size', type=int)
+    parser.add_argument('--eval_batch_size', type=int)
+    parser.add_argument('--learning_rate', type=float)
+    parser.add_argument('--weight_decay', type=float)
+    parser.add_argument('--epsilon', type=float)
+    parser.add_argument('--warmup_steps', type=int)
+    parser.add_argument('--grad_accumulation_steps', type=int)
+    parser.add_argument('--gradient_clip_val', type=float)
+
+    args = parser.parse_args()
+    cfg = get_config(args.cfg)
+    for k, v in cfg.items():
+        if vars(args).get(k, None) != None and vars(args)[k] != v:
+            cfg[k] = vars(args)[k]
+
+    return cfg
+
+def get_config(cfg: str):
+    if len(cfg.split('.')) > 1 and cfg.split('.')[1] == 'json':
+        path = f'../config/{cfg}'
+    else:
+        path = f'../config/{cfg}.json'
+
+    with open(path) as c:
+        config = json.load(c)
+    return config
+
+class DataEncoder(Dataset):
     def __init__(self, inputs, targets, tokenizer, max_len: int=128):
+        super().__init__()
         self.tokenizer = tokenizer
         self.max_len = max_len
         self.inputs = inputs
@@ -14,27 +55,28 @@ class DS(Dataset):
         self.inputs_out = []
         self.targets_out = []
 
-        self._build_data()
+        self.encode_data()
 
     def __len__(self):
         return len(self.inputs)
     
-    def _build_data(self):
+    def encode_data(self):
 
         for input, target in zip(self.inputs, self.targets):
 
             input = ' '.join(input)
             target = ' '.join(target)
 
-            tokenized_input = self.tokenizer(
-              input, 
+            tokenized_input = self.tokenizer.encode(
+              [input], 
               max_length=self.max_len, 
               padding='max_length', 
               truncation=True,
               return_tensors="pt",
             )
-            tokenized_target = self.tokenizer(
-              target, 
+
+            tokenized_target = self.tokenizer.encode(
+              [target], 
               max_length=self.max_len, 
               padding='max_length', 
               truncation=True,
@@ -46,16 +88,19 @@ class DS(Dataset):
     
     def __getitem__(self, index) -> dict:
         return {
-            'input_ids': self.inputs_out[index].input_ids,
-            'attention_mask': self.inputs_out[index].attention_mask,
-            'labels': self.targets_out[index].input_ids,
-            'decoder_attention_mask': self.targets_out[index].attention_mask
-        }
+            'input_ids': self.inputs_out[index]['input_ids'].squeeze(),
+            'attention_mask': self.inputs_out[index]['attention_mask'].squeeze(),
+            'decoder_input_ids': self.targets_out[index]['input_ids'].squeeze(),
+            'decoder_attention_mask': self.targets_out[index]['attention_mask'].squeeze()
+            }
+    
         
-class DataProcessor ():
+class DataProcessor():
 
-    def __init__(self, source: str='silviolima'):
+    def __init__(self, source: str, pmap: dict, fmap: dict):
         self.preprocessed = dict()
+        self.pmap = pmap
+        self.fmap = fmap
 
         if source == 'silviolima':
             self.preprocess_silviolima()
@@ -64,9 +109,6 @@ class DataProcessor ():
 
     def preprocess_silviolima (self) -> tuple[list[list[str]], list[list[list[str]]]]:
         data = load_dataset('SilvioLima/absa')
-        s2w = { 'NEG': 'negative',
-                'POS': 'positive',
-                'NEU': 'neutral' }
 
         for split in ['train', 'valid', 'test']:
             inputs = []
@@ -76,7 +118,7 @@ class DataProcessor ():
                 target = []
                 for t in eval(item['triples']):
                     t = list(t)
-                    t[2] = s2w[t[2]]
+                    t[2] = pmap[t[2]]
                     if t[0] == -1: t[0] = 'NULL'
                     target.append(t)
                 targets.append(target)
@@ -84,38 +126,35 @@ class DataProcessor ():
             self.preprocessed[split] = inputs, targets
 
         return self.preprocessed     
-    
+
     def _processing_step (self, input: list[str], target: list[list[str]], task: str, policy: str) -> tuple[list[str], list[str]]:
         input_out = []
         target_out = []
-        label_idx = []
-
-        if 'a' in task: label_idx.append(0) 
-        if 'o' in task: label_idx.append(1) 
-        if 'p' in task: label_idx.append(2) 
+        fidMap = { 'a': 0, 'o': 1, 'p': 2}
 
         if policy == 'base':
             input_out = input
 
         elif policy == 'functional':
-            funcs = ['<ASPECT>', '<OPINION>', '<POLATITY>']
-            input_out.extend([funcs[i] for i in label_idx])
+            try:
+                input_out.extend([fmap[f] for f in task])
+            except:
+                print('-> ERR: "task" param cannot contain more than one of each letters: "a", "o", "p"')
+                return
             input_out.extend(input)
 
         target_out.append('[')
         for t in target:
             t_out = []
             t_out.append('[')
-            t_out.append(t[label_idx[0]])
-
-            if len(label_idx) > 1: 
+            for f in task:
+                try:
+                    t_out.append(t[fidMap[f]])
+                except:
+                    print('-> ERR: "task" param cannot contain more than one of each letters: "a", "o", "p"')
+                    return
                 t_out.append('|')
-                t_out.append(t[label_idx[1]])
-            
-                if len(label_idx) > 2:
-                    t_out.append('|')
-                    t_out.append(t[label_idx[2]])
-
+            t_out.pop()
             t_out.append(']')
             target_out.extend(t_out)
         target_out.append(']')
@@ -134,13 +173,175 @@ class DataProcessor ():
         
         return inputs, targets
 
-if __name__ == '__main__':
+class DataModule():
+    def __init__(self, source: str, pmap: dict, fmap: dict, tokenizer_ckpt: str, max_len: int) -> None:
+        self.source = source
+        self.pmap = pmap
+        self.fmap = fmap
+        self.tokenizer_ckpt = tokenizer_ckpt
+        self.max_len = max_len
+
+        self.dp = self.build_processor()
+        self.tokenizer = self.build_tokenizer()
+
+    def build_tokenizer(self):
+        tokenizer = T5Tokenizer.from_pretrained(self.tokenizer_ckpt, legacy=False, additional_special_tokens=[v for v in fmap.values()])
+        # tokenizer.add_tokens([v for v in fmap.values()])
+        return tokenizer
     
-    dp = DataProcessor()
-    inputs, targets = dp.process(split='valid', task='poa', policy='base')
+    def build_processor(self):
+        return DataProcessor(self.source, self.pmap, self.fmap)
+    
+    def get_dataset(self, split, policy, task):
+        return DataEncoder(*self.dp.process(split, policy, task), self.tokenizer, self.max_len)
+    
+    def get_dataloader(self, split, batch_size, policy, task):
+        return DataLoader(self.get_dataset(split, policy, task), batch_size=batch_size, shuffle=(split == 'train'))
 
-    tokenizer = T5Tokenizer.from_pretrained('google-t5/t5-small')
-    ds = DS(inputs, targets, tokenizer)
 
-    print(ds[0])
+class T5FineTuner(pl.LightningModule):
+    def __init__(self, 
+                 model_ckpt: str,
+                 learning_rate: float, 
+                 weight_decay: float, 
+                 epsilon: float,
+                 warmup_steps: int,
+                 num_training_steps: int):
+        super(T5FineTuner, self).__init__()
+        
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.epsilon = epsilon
+        self.warmup_steps = warmup_steps
+        self.num_training_steps = num_training_steps
+        self.model = T5ForConditionalGeneration.from_pretrained(model_ckpt)
+        self.history = {'train_loss': [], 'val_loss': []}
 
+        self.train_dl = None
+        self.val_dl = None
+        self.test_dl = None
+
+    def is_logger(self):
+        return True
+
+    def forward(self, input_ids, attention_mask=None, decoder_input_ids=None, 
+                decoder_attention_mask=None, labels=None):
+        return self.model(
+            input_ids,
+            attention_mask=attention_mask,
+            decoder_input_ids=decoder_input_ids,
+            decoder_attention_mask=decoder_attention_mask,
+            labels=labels,
+        )
+
+    def _step(self, batch):
+        lm_labels = batch["target_ids"]
+        lm_labels[lm_labels[:, :] == self.tokenizer.pad_token_id] = -100
+
+        outputs = self(
+            input_ids=batch["input_ids"],
+            attention_mask=batch["attention_mask"],
+            decoder_input_ids = batch['decoder_input_ids'],
+            decoder_attention_mask=batch['decoder_attention_mask'],
+            labels=lm_labels,
+        )
+
+        loss = outputs[0]
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        loss = self._step(batch)
+        logs = {"train_loss": loss}
+        return {"loss": loss, "log": logs}
+
+    def training_epoch_end(self, outputs):
+        avg_train_loss = torch.stack([x["loss"] for x in outputs]).mean()
+        logs = {"avg_train_loss": avg_train_loss}
+        self.history['train_loss'].append(avg_train_loss)
+        return {"avg_train_loss": avg_train_loss, "log": logs, 'progress_bar': logs}
+
+    def validation_step(self, batch, batch_idx):
+        loss = self._step(batch)        
+        return {"val_loss": loss}
+
+    def validation_epoch_end(self, outputs):
+        avg_val_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
+        logs = {"val_loss": avg_val_loss}
+        self.history['val_loss'].append(avg_val_loss)
+        return {"avg_val_loss": avg_val_loss, "log": logs, 'progress_bar': logs}
+
+    def configure_optimizers(self):
+        model = self.model
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+                "weight_decay": self.weight_decay,
+            },
+            {
+                "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+                "weight_decay": 0.0,
+            },
+        ]
+        optimizer = AdamW(optimizer_grouped_parameters, lr=self.learning_rate, eps=self.epsilon)
+        scheduler = get_linear_schedule_with_warmup(
+            self.opt, num_warmup_steps=self.warmup_steps, num_training_steps=self.num_training_steps
+        )
+        self.lr_scheduler = scheduler
+        self.opt = optimizer
+        return [optimizer]
+
+    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_idx, second_order_closure=None):
+        optimizer.step()
+        optimizer.zero_grad()
+        self.lr_scheduler.step()
+
+    def get_tqdm_dict(self):
+        tqdm_dict = {"loss": "{:.4f}".format(self.trainer.avg_loss), "lr": self.lr_scheduler.get_last_lr()[-1]}
+        return tqdm_dict
+
+    def set_dataloaders(self, train_dl: DataLoader=None, val_dl: DataLoader=None, test_dl: DataLoader=None):
+        self.train_dl = train_dl
+        self.val_dl = val_dl
+        self.test_dl = test_dl
+
+    def train_dataloader(self):
+        assert self.train_dl != None, 'train_dl must be set using the set_dataloader() method'
+        return self.train_dl
+        
+
+    def val_dataloader(self):
+        assert self.train_dl != None, 'val_dl must be set using the set_dataloader() method'
+        return self.val_dl
+    
+    def test_dataloader(self):
+        assert self.train_dl != None, 'test_dl must be set using the set_dataloader() method'
+        return self.test_dl
+    
+
+
+if __name__ == '__main__':
+    # checkpoint = 'google/t5-v1_1-small'
+    # pmap = { 'NEG': 'negative',
+    #          'POS': 'positive',
+    #          'NEU': 'neutral' }
+    
+    # fmap = { 'a': '<ASPECT>',
+    #          'o': '<OPINION>',
+    #          'p': '<POLARITY>'}
+    
+    # dm = DataModule('silviolima', pmap, fmap, checkpoint, 128)
+    # print(dm.tokenizer.encode('<ASPECT>'))
+    # print(dm.tokenizer.encode('<OPINION>'))
+    # print(dm.tokenizer.encode('<POLARITY>'))
+    # print(dm.tokenizer.decode([32000, 32001, 32002, 456, 7584, 1], skip_special_tokens=False))
+    # val_dl = dm.get_dataloader('valid', 1, policy='functional', task='aop')
+    # print(len(val_dl))
+
+    # t_total = (
+    #         (len(dataloader.dataset) // (self.hparams.train_batch_size * max(1, len(self.hparams.n_gpu))))
+    #         // self.hparams.gradient_accumulation_steps
+    #         * float(self.hparams.num_train_epochs)
+    #     )
+    cfg = init_config()
+    print(cfg)

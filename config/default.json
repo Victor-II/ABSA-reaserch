@@ -1,0 +1,26 @@
+{   
+    "pmap": {"NEG": "negative", "POS": "positive", "NEU": "neutral"},
+    "fmap": {"a": "<ASPECT>", "o": "<OPINION>", "p": "POLARITY"},
+    "dataset": "silviolima",
+    "policy": "base",
+    "task": "aop",
+
+    "seed": 3141519,
+    "mode": "train-eval",
+    "model_ckpt": "google/t5-v1_1-small",
+    "epochs": 10,
+    "train_batch_size": "128",
+    "eval_batch_size": 128,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0,
+    "epsilon": 1e-8,
+    "warmup_steps": 0,
+    "grad_accumulation_steps": 0,
+    "gpus": 2,
+    "accelerator": "gpu",
+    "gradient_clip_val": 1.0,
+    "max_seq_len": 256,
+
+    "dir_ckpt": "../checkpoints", 
+    "dir_exp": "../experiments"
+}
