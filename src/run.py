@@ -72,7 +72,10 @@ class DataProcessor():
         for split, domain in zip(['train', 'valid', 'test'], self.domains):
             inputs = []
             targets = []
-            items = data[split] if 'all' in domain else items = (d for d in data[split].to_list() if d['domain'] in domain)
+            if 'all' in domain:
+                items = data[split]
+            else:
+                items = (d for d in data[split].to_list() if d['domain'] in domain)
                 
             for item in items:
                 inputs.append(item['sentence'].split())
@@ -640,7 +643,45 @@ def run(config: dict):
     if CFG['mode'] == 'train-eval':
         pass
 
+def get_stats(split: str):
+    stats = {
+        'num_samples': 0,
+        'domain_distribution': {},
+        'source_distribution': {},
+        'sentence_len_distribution': {},
+        'sentence_len_stats': {},
+        'aspect_len_distribution': {},
+        'aspect_len_stats': {},
+        'opinion_len_distribution': {},
+        'opinion_len_stats': {},
+        'polarity_distribution': {}
+    }
+    items = load_dataset('SilvioLima/absa')[split]
+    stats['num_samples'] = len(items)
+    for item in items:
+        sent = item['sentence'].split()
+        for t in eval(item['triples']):
+            t = list(t)
+            if t[0] == -1: t[0] = 'NULL'
+            stats['aspect_len_distribution'][len(t[0])] = stats['aspect_len_distribution'].get(len(t[0]), 0) + 1
+            stats['opinion_len_distribution'][len(t[1])] = stats['opinion_len_distribution'].get(len(t[1]), 0) + 1
+            stats['polarity_distribution'][t[2]] = stats['polarity_distribution'].get(t[2], 0) + 1
 
+        stats['source_distribution'][item['source']] = stats['source_distribution'].get(item['source'], 0) + 1
+        stats['domain_distribution'][item['domain']] = stats['domain_distribution'].get(item['domain'], 0) + 1
+        stats['sentence_len_distribution'][len(sent)] = stats['sentence_len_distribution'].get(len(sent), 0) + 1
+                
+
+    stats['sentence_len_stats']['max'] = max(stats['sentence_len_distribution'].keys())
+    stats['sentence_len_stats']['min'] = min(stats['sentence_len_distribution'].keys())
+
+    stats['aspect_len_stats']['max'] = max(stats['aspect_len_distribution'].keys())
+    stats['aspect_len_stats']['min'] = min(stats['aspect_len_distribution'].keys())
+
+    stats['opinion_len_stats']['max'] = max(stats['opinion_len_distribution'].keys())
+    stats['opinion_len_stats']['min'] = min(stats['opinion_len_distribution'].keys())
+
+    return stats
     
 
 
@@ -666,10 +707,15 @@ if __name__ == '__main__':
     #     print(f'{item['task'] = }')
     #     print('-'*50)
     #     break
-    data = load_dataset('SilvioLima/absa')
-    data = data['train'].to_list()
-    for d in data:
-        print(d)
-        break
-
     
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    stats = get_stats('train')
+    x, y = [], []
+    for k, v in stats['sentence_len_distribution'].items():
+        x.append(k)
+        y.append(v)
+
+    ax.bar(x, y)
+    plt.savefig()
