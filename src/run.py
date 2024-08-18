@@ -55,12 +55,12 @@ def get_config(cfg: str):
         
 class DataProcessor():
 
-    def __init__(self, source: str, pmap: dict, fmap: dict, seed: int):
+    def __init__(self, source: str, domain_train: list[str], domain_val: list[str], domain_test: list[str], pmap: dict, fmap: dict, seed: int):
         self.preprocessed = dict()
         self.pmap = pmap
         self.fmap = fmap
         self.seed = seed
-
+        self.domains = [domain_train, domain_val, domain_test]
         if source == 'silviolima':
             self.preprocess_silviolima()
         else:
@@ -69,10 +69,12 @@ class DataProcessor():
     def preprocess_silviolima (self) -> tuple[list[list[str]], list[list[list[str]]]]:
         data = load_dataset('SilvioLima/absa')
 
-        for split in ['train', 'valid', 'test']:
+        for split, domain in zip(['train', 'valid', 'test'], self.domains):
             inputs = []
             targets = []
-            for item in data[split]:
+            items = data[split] if 'all' in domain else items = (d for d in data[split].to_list() if d['domain'] in domain)
+                
+            for item in items:
                 inputs.append(item['sentence'].split())
                 target = []
                 for t in eval(item['triples']):
@@ -637,42 +639,31 @@ def run(config: dict):
 
 
 if __name__ == '__main__':
-    checkpoint = 'google/t5-v1_1-small'
-    pmap = { 'NEG': 'negative',
-             'POS': 'positive',
-             'NEU': 'neutral' }
+    # checkpoint = 'google/t5-v1_1-small'
+    # pmap = { 'NEG': 'negative',
+    #          'POS': 'positive',
+    #          'NEU': 'neutral' }
     
-    fmap = { 'a': '<ASPECT>',
-             'o': '<OPINION>',
-             'p': '<POLARITY>'}
+    # fmap = { 'a': '<ASPECT>',
+    #          'o': '<OPINION>',
+    #          'p': '<POLARITY>'}
     
-    # dm = DataModule('silviolima', pmap, fmap, checkpoint, 128)
-    # print(dm.tokenizer.encode('<ASPECT>'))
-    # print(dm.tokenizer.encode('<OPINION>'))
-    # print(dm.tokenizer.encode('<POLARITY>'))
-    # print(dm.tokenizer.decode([32000, 32001, 32002, 456, 7584, 1], skip_special_tokens=False))
-    # val_dl = dm.get_dataloader('valid', 1, policy='functional', task='aop')
-    # print(len(val_dl))
+    # dm = DataModule('silviolima', pmap, fmap, checkpoint, 128, 3141519)
+    # print(dm.tokenizer.encode('['))
+    # print(dm.tokenizer.encode(']'))
+    # print(dm.tokenizer.encode('|'))
 
-    
-    # cfg = init_config()
-    # print(cfg)
-    dm = DataModule('silviolima', pmap, fmap, checkpoint, 128, 3141519)
-    print(dm.tokenizer.encode('['))
-    print(dm.tokenizer.encode(']'))
-    print(dm.tokenizer.encode('|'))
-
-    # for i in range(10):
-    #     print(dp.preprocessed['valid'][i])
-    data = dm.get_dataloader('valid', batch_size=3, policy='compositional', task='aop', partitions_split=[0.5, 0.25, 0.25])
-
-    # rng = np.random.default_rng()
-    # idx = rng.choice(len(data[0][0]), 10)
-    for item in data:
-        print(f'{item['input_ids'] = }')
-        print(f'{item['decoder_input_ids'] = }')
-        print(f'{item['task'] = }')
-        print('-'*50)
+    # data = dm.get_dataloader('valid', batch_size=3, policy='compositional', task='aop', partitions_split=[0.5, 0.25, 0.25])
+    # for item in data:
+    #     print(f'{item['input_ids'] = }')
+    #     print(f'{item['decoder_input_ids'] = }')
+    #     print(f'{item['task'] = }')
+    #     print('-'*50)
+    #     break
+    data = load_dataset('SilvioLima/absa')
+    data = data['train'].to_list()
+    for d in data:
+        print(d)
         break
-    
 
+    
