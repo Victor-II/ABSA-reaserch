@@ -587,6 +587,9 @@ def run(config: dict):
 
         dm = DataModule(
             source=CFG['source'],
+            domain_train=CFG['domain_train'],
+            domain_val=CFG['domain_val'],
+            domain_test=CFG['domain_test'],
             pmap=CFG['pmap'],
             fmap=CFG['fmap'],
             tokenizer_ckpt=CFG['tokeizer_ckpt'],
