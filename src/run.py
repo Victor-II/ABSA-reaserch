@@ -219,8 +219,11 @@ class DataEncoder(Dataset):
             }
 
 class DataModule():
-    def __init__(self, source: str, pmap: dict, fmap: dict, tokenizer_ckpt: str, max_len: int, seed: int) -> None:
+    def __init__(self, source: str, domain_train: list[str], domain_val: list[str], domain_test: list[str], pmap: dict, fmap: dict, tokenizer_ckpt: str, max_len: int, seed: int) -> None:
         self.source = source
+        self.domain_train = domain_train
+        self.domain_val = domain_val
+        self.domain_test = domain_test
         self.pmap = pmap
         self.fmap = fmap
         self.tokenizer_ckpt = tokenizer_ckpt
@@ -235,7 +238,7 @@ class DataModule():
         return tokenizer
     
     def build_processor(self):
-        return DataProcessor(self.source, self.pmap, self.fmap, self.seed)
+        return DataProcessor(self.source, self.domain_train, self.domain_val, self.domain_test, self.pmap, self.fmap, self.seed)
     
     def get_dataset(self, split, policy, task, partitions_split):
         return DataEncoder(*self.dp.process(split, policy, task, partitions_split), self.tokenizer, self.max_len)
